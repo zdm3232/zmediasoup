@@ -1,6 +1,11 @@
 
 import "./lib/mediasoupclient.min.js";
 
+// configuration
+const serverKey = "whatevs";
+const serverUrl = "https://whatevs.com:port";
+const roomId = "whatevs";
+
 function zdebug0( obj ) {
   // console.log( obj );
 }
@@ -41,9 +46,8 @@ class zMediaSoupAVClient extends AVClient {
      */
   async initialize() {
     zdebug0( "MediaSoup initialize" );
-    this._server = "vtt.bazjaz.com";
     this._client = window.mediasoupClient;
-    this._roomId = "32";
+    this._roomId = roomId;
     this._socket = null;
     this._device = null;
     this._user = new zMediaSoupUser( game.user );
@@ -369,10 +373,9 @@ class zMediaSoupAVClient extends AVClient {
     await this.disconnect(); // Disconnect first, just in case
 
     const opts = {
-      path: '/nuuddr8uuhpvuze5',
+      path: `/${serverKey}`,
       transports: ['websocket']
     };
-    const serverUrl = 'https://vtt.bazjaz.com:3016';
     socket = io( serverUrl, opts );
     socket.request = socketPromise( socket );
 
