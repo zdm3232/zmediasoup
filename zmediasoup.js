@@ -2,15 +2,16 @@
 import "./lib/mediasoupclient.min.js";
 
 // configuration
-const serverKey = "whatevs";
-const serverUrl = "https://whatevs.com:port";
-const roomId = "whatevs";
+const serverKey = "jn98pfl663mngruo";
+const serverName = "vtt.bazjaz.com";
+const serverUrl = "https://vtt.bazjaz.com:3016";
+const roomId = "32";
 
 function zdebug0( obj ) {
   // console.log( obj );
 }
 function zdebug( obj ) {
-  console.log( obj );
+  // console.log( obj );
 }
 
 const socketPromise = function( socket ) {
@@ -46,7 +47,7 @@ class zMediaSoupAVClient extends AVClient {
      */
   async initialize() {
     zdebug0( "MediaSoup initialize" );
-    this._client = window.mediasoupClient;
+    this._server = serverName;
     this._roomId = roomId;
     this._socket = null;
     this._device = null;
@@ -92,6 +93,9 @@ class zMediaSoupAVClient extends AVClient {
       ui.notifications.notify( "MediaSoup: device cannot produce video" );
       return;
     }
+
+    zdebug( 'MediaSoup: init producers' );
+    zdebug( this._device.rtpCapabilities );
 
     const data = await this._socket.request('createWebRtcTransport', {
       forceTcp: false,
@@ -225,7 +229,10 @@ class zMediaSoupAVClient extends AVClient {
     let video = (kind === "video");
     let audio = (kind === "audio");
 
-    let stream = await navigator.mediaDevices.getUserMedia( { video: video, audio: audio } );
+    let src = this.settings.get( "client", video ? "videoSrc" : "audioSrc" );
+    let params = { deviceId: { ideal: src } };
+
+    let stream = await navigator.mediaDevices.getUserMedia( { video: video?params:false, audio: audio?params:false } );
     let producer = await this._producerTransport.produce( { track: video ? stream.getVideoTracks()[0] : stream.getAudioTracks()[0] } );
 
     this._user._streams[ producer.id ] = {
@@ -272,6 +279,7 @@ class zMediaSoupAVClient extends AVClient {
 	zdebug0( `--> joined room` );
 	console.log( 'MediaSoup: joined room' );
 	let routerRtpCapabilities = await socket.request( 'getRouterRtpCapabilities' );
+	zdebug( routerRtpCapabilities );
 	await this._device.load( { routerRtpCapabilities } );
 	await this.initProducerTransports();
 	await this.initConsumerTransports();
@@ -368,6 +376,7 @@ class zMediaSoupAVClient extends AVClient {
      * @return {Promise<boolean>}   Was the connection attempt successful?
      */
   async connect() {
+    console.log( '------> CONNECT <------' );
     zdebug0( "MediaSoup connect" );
 
     await this.disconnect(); // Disconnect first, just in case
@@ -693,8 +702,17 @@ class zMediaSoupAVClient extends AVClient {
     }
 
     // render
-    this.master.render();
+    // this.master.render();
   }
 }
+
+// add reconnect button
+Hooks.on( "renderCameraViews", async function( cameraviews, html ) {
+  const cameraBox = html.find( `[data-user="${game.user?.id}"]` );
+  const element = cameraBox.find( '[data-action="toggle-popout"]' );
+  const connect = $('<a class="av-control" title="Reconnect"><i class="fas fa-sync"></i></a>');
+  connect.on( "click", async () => { await game.webrtc.client.connect(); } );
+  element.after( connect );
+});
 
 CONFIG.WebRTC.clientClass = zMediaSoupAVClient;
