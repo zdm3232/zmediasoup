@@ -1,15 +1,20 @@
 
 import "./lib/mediasoupclient.min.js";
 
-// configuration
-const serverKey = "jn98pfl663mngruo";
-const serverName = "vtt.bazjaz.com";
-const serverUrl = "https://vtt.bazjaz.com:3016";
-const roomId = "32";
+import {config} from "./config.js";
 
-function zdebug0( obj ) {
-  // console.log( obj );
-}
+/*
+  config.js should have server configuration information
+
+  export let config = {
+    serverKey: "path-name-in-socket-for-server",
+    serverName: "server-host-name",
+    serverUrl: "server-url",
+    roomId: "room-id",
+  };
+
+*/
+
 function zdebug( obj ) {
   // console.log( obj );
 }
@@ -29,11 +34,29 @@ class zMediaSoupUser {
   }
 
   userId() { return this._user.id; }
+  name()   { return this._user.name; }
+
+  getStream( type ) {
+    for ( let [key, value] of Object.entries( this._streams ) ) {
+      if ( value.kind === type ) {
+	return value.stream;
+      }
+    }
+    return null;
+  }
 };
 
 class zMediaSoupAVClient extends AVClient {
   constructor( master, settings ) {
     super( master, settings );
+  }
+
+  async sleep( delay ) {
+    return new Promise((resolve) => setTimeout(resolve, delay));
+  }
+
+  masterRender() {
+    debounce( this.master.render(), 500 );
   }
 
   /* -------------------------------------------- */
@@ -46,9 +69,9 @@ class zMediaSoupAVClient extends AVClient {
      * @return {Promise<void>}
      */
   async initialize() {
-    zdebug0( "MediaSoup initialize" );
-    this._server = serverName;
-    this._roomId = roomId;
+    zdebug( "--> MediaSoup initialize" );
+    this._connected = false;
+    this._roomId = config.roomId;
     this._socket = null;
     this._device = null;
     this._user = new zMediaSoupUser( game.user );
@@ -58,9 +81,20 @@ class zMediaSoupAVClient extends AVClient {
     this._consumerTransport = null;
 
     // set client to always be on
-    if ( this.settings.get("client", "voice.mode") === "activity" ) {
-      this.settings.set( "client", "voice.mode", "always" );
-    }
+    this.settings.set( "client", "voice.mode", "always" );
+  }
+
+  get isVoicePTT() {
+    return false;
+  }
+  get isVoiceAlways() {
+    return true;
+  }
+  get isVoiceActivated() {
+    return false;
+  }
+  get isMuted() {
+    return this.settings.client.users[game.user?.id || ""]?.muted || false;
   }
 
   onVolumeChange( event ) {
@@ -70,16 +104,24 @@ class zMediaSoupAVClient extends AVClient {
     box.getElementsByTagName("audio")[0].volume = volume;
   }
 
-  getUserAudioElement( userId, videoElement = null ) {
+  async getUserAudioElement( userId, videoElement = null ) {
     // Find an existing audio element
     let audioElement = ui.webrtc.element.find(`.camera-view[data-user=${userId}] audio.user-audio`)[0];
 
     // If one doesn't exist, create it
     if ( !audioElement && videoElement ) {
+      zdebug( `--------> create audio element ${this._users[userId].name()}` );
+
       audioElement = document.createElement("audio");
       audioElement.className = "user-audio";
       audioElement.autoplay = true;
       videoElement.after(audioElement);
+
+      const requestedSink = this.settings.get( "client", "audioSink" );
+      await audioElement.setSinkId( requestedSink ).catch(
+	(error) => {
+	  console.log( `Error setting audio sink: ${error}` );
+	});
 	  
       // Bind volume control
       ui.webrtc.element.find(`.camera-view[data-user=${userId}] .webrtc-volume-slider`).change( this.onVolumeChange.bind(this) );
@@ -94,8 +136,7 @@ class zMediaSoupAVClient extends AVClient {
       return;
     }
 
-    zdebug( 'MediaSoup: init producers' );
-    zdebug( this._device.rtpCapabilities );
+    zdebug( '--> MediaSoup: init producers' );
 
     const data = await this._socket.request('createWebRtcTransport', {
       forceTcp: false,
@@ -200,29 +241,29 @@ class zMediaSoupAVClient extends AVClient {
   }
 
   removeStream( userId, stream_id ) {
-    zdebug0( `--> removeConsumer ${userId} ${stream_id}` );
     let user = this._users[ userId ];
     if ( !user ) {
-      zdebug0( '  no user found for removeStream' );
+      zdebug( '  no user found for removeStream' );
       return;
     }
+    zdebug( `--> removeStream ${user.name()} ${stream_id}` );
     let stream = user._streams[ stream_id ];
     if ( !stream ) {
-      zdebug0( '  no stream found for removeStream' );
+      zdebug( '  no stream found for removeStream' );
       return;
     }
     for ( let track of stream.stream.getVideoTracks() ) {
-      zdebug0( '  stop video track' );
+      zdebug( '  stop video track' );
       track.stop();
     }
     for ( let track of stream.stream.getAudioTracks() ) {
-      zdebug0( '  stop audio track' );
+      zdebug( '  stop audio track' );
       track.stop();
     }
     delete user._streams[ stream_id ];
 
     // render
-    this.master.render();
+    this.masterRender();
   }
 
   async addProducer( kind ) {
@@ -230,8 +271,8 @@ class zMediaSoupAVClient extends AVClient {
     let audio = (kind === "audio");
 
     let src = this.settings.get( "client", video ? "videoSrc" : "audioSrc" );
-    let params = { deviceId: { ideal: src } };
 
+    let params = { deviceId: { ideal: src } };
     let stream = await navigator.mediaDevices.getUserMedia( { video: video?params:false, audio: audio?params:false } );
     let producer = await this._producerTransport.produce( { track: video ? stream.getVideoTracks()[0] : stream.getAudioTracks()[0] } );
 
@@ -244,18 +285,21 @@ class zMediaSoupAVClient extends AVClient {
     producer.on(
       'transportclose', function () {
 	this.removeStream( this._user.userId(), producer.id );
+	this.socket.emit( 'producerClosed', { producer_id: producer.id } );
       }.bind(this)
     );
 
     producer.on(
       'close',function () {
 	this.removeStream( this._user.userId(), producer.id );
+	this.socket.emit( 'producerClosed', { producer_id: producer.id } );
       }.bind(this)
     );
 
     producer.on(
       'transportclose', function () {
 	this.removeStream( this._user.userId(), producer.id );
+	this.socket.emit( 'producerClosed', { producer_id: producer.id } );
       }.bind(this)
     );
   }
@@ -272,14 +316,13 @@ class zMediaSoupAVClient extends AVClient {
       });
 
     socket.request( 'join', {
-      name: this._user.userId(),
+      userid: this._user.userId(),
+      name: this._user.name(),
       room_id: this._roomId
     }).then(
       async function( e ) {
-	zdebug0( `--> joined room` );
-	console.log( 'MediaSoup: joined room' );
+	zdebug( `--> joined room` );
 	let routerRtpCapabilities = await socket.request( 'getRouterRtpCapabilities' );
-	zdebug( routerRtpCapabilities );
 	await this._device.load( { routerRtpCapabilities } );
 	await this.initProducerTransports();
 	await this.initConsumerTransports();
@@ -294,7 +337,13 @@ class zMediaSoupAVClient extends AVClient {
     await this.addProducer( 'audio' );
     
     // render
-    this.master.render();
+    this.masterRender();
+    await this.sleep( 1000 );
+
+    // broadcast
+    let activity = {av: { muted: !this.isAudioEnabled(), hidden: !this.isVideoEnabled } };
+    console.log( `----> broadcast activity { muted: ${activity.av.muted}, hidden: ${activity.av.hidden} }` );
+    game.user.broadcastActivity( activity );
   }
 
   async getConsumeStream( producerId ) {
@@ -304,9 +353,9 @@ class zMediaSoupAVClient extends AVClient {
       consumerTransportId: this._consumerTransport.id, // might be
       producerId
     });
-    zdebug0( `-> consume stream from ${data.name}` );
+    zdebug( `--> consume stream from ${data.name}` );
     const { id, kind, rtpParameters } = data
-    let userId = data.name;
+    let userId = data.userid;
 
     let codecOptions = {}
     const consumer = await this._consumerTransport.consume({
@@ -363,7 +412,7 @@ class zMediaSoupAVClient extends AVClient {
     )
 
     // render
-    this.master.render();
+    // this.masterRender();
   }
 
   /* -------------------------------------------- */
@@ -376,26 +425,30 @@ class zMediaSoupAVClient extends AVClient {
      * @return {Promise<boolean>}   Was the connection attempt successful?
      */
   async connect() {
-    console.log( '------> CONNECT <------' );
-    zdebug0( "MediaSoup connect" );
+    if ( this._connected ) {
+      console.log( '---> Mediasoup: ALREADY CONNECTED' );
+      return true;
+    }
 
-    await this.disconnect(); // Disconnect first, just in case
+    console.log( '---> Mediasoup: CONNECT' );
+
+    // await this.disconnect(); // Disconnect first, just in case
 
     const opts = {
-      path: `/${serverKey}`,
+      path: `/${config.serverKey}`,
       transports: ['websocket']
     };
-    socket = io( serverUrl, opts );
+    socket = io( config.serverUrl, opts );
     socket.request = socketPromise( socket );
 
     socket.on('connect', async () => {
       this._socket = socket;
-      zdebug0( '--> connected!' );
+      zdebug( '--> connected!' );
       await this.produce();
     });
 
     socket.on('consumerClosed', async ( { consumer_id } ) => {
-      zdebug0( `--> consumerClosed ${consumer_id}` );
+      zdebug( `--> consumerClosed ${consumer_id}` );
       let userId = null;
       for ( let [key, value] of Object.entries( this._users ) ) {
 	if ( value._streams[ consumer_id ] ) {
@@ -405,13 +458,14 @@ class zMediaSoupAVClient extends AVClient {
       if ( userId ) {
 	this.removeStream( userId, consumer_id );
       } else {
-	zdebug0( `  no user for consumer` );
+	zdebug( `  no user for consumer` );
       }
+      this.masterRender();
     });
 
     socket.on('disconnect', () => {
       this._socket = null;
-      zdebug0( '--> disconnected!' );
+      zdebug( '--> disconnected!' );
     });
     
     socket.on('connect_error', async (err) => {
@@ -423,13 +477,15 @@ class zMediaSoupAVClient extends AVClient {
     socket.on(
       'newProducers',
       async function (data) {
-	zdebug0( '--> newProducers' );
+	zdebug( '--> newProducers' );
 	for ( let { producer_id } of data ) {
 	  await this.consume( producer_id );
 	}
+	this.masterRender();
       }.bind(this)
     );
 
+    this._connected = true;
     return true;
   }
 
@@ -441,8 +497,9 @@ class zMediaSoupAVClient extends AVClient {
      * @return {Promise<boolean>}   Did a disconnection occur?
      */
   async disconnect() {
-    zdebug0("MediaSoup disconnect");
-    if ( this._socket ) {
+    zdebug("--> MediaSoup disconnect");
+    if ( this._connected && this._socket ) {
+      this._connected = false;
       this._consumerTransport.close();
       this._producerTransport.close();
       this._socket.off( 'disconnect' );
@@ -452,53 +509,10 @@ class zMediaSoupAVClient extends AVClient {
     return true;
   }
 
-  /* -------------------------------------------- */
-  /*  Device Discovery                            */
-  /* -------------------------------------------- */
-
-  /**
-     * Provide an Object of available audio sources which can be used by this implementation.
-     * Each object key should be a device id and the key should be a human-readable label.
-     * @return {Promise<{string: string}>}
-     */
-  async getAudioSinks() {
-    zdebug0( 'MediaSoup: getAudioSinks' );
-    return this._getSourcesOfType( "audiooutput" );
-  }
-
-  /* -------------------------------------------- */
-
-  /**
-     * Provide an Object of available audio sources which can be used by this implementation.
-     * Each object key should be a device id and the key should be a human-readable label.
-     * @return {Promise<{string: string}>}
-     */
-  async getAudioSources() {
-    zdebug0( 'MediaSoup: getAudioSources' );
-    return this._getSourcesOfType( "audioinput" );
-  }
-
-  /* -------------------------------------------- */
-
-  /**
-     * Provide an Object of available video sources which can be used by this implementation.
-     * Each object key should be a device id and the key should be a human-readable label.
-     * @return {Promise<{string: string}>}
-     */
-  async getVideoSources() {
-    zdebug0( 'MediaSoup: getVideoSources' );
-    return this._getSourcesOfType( "videoinput" );
-  }
-
-  async _getSourcesOfType( kind )  {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    return devices.reduce( (obj, device) => {
-      if (device.kind === kind) {
-        obj[device.deviceId] =
-          device.label || getGame().i18n.localize("WEBRTC.UnknownDevice");
-      }
-      return obj;
-    }, {});
+  async reconnect() {
+    this.disconnect();
+    await this.sleep( 1500 );
+    this.connect();
   }
 
   /* -------------------------------------------- */
@@ -514,7 +528,7 @@ class zMediaSoupAVClient extends AVClient {
     if ( !this._users ) {
       return [];
     }
-    zdebug0( 'MediaSoup: getConnectedUsers' );
+    zdebug( '--> MediaSoup: getConnectedUsers' );
     let connectedUsers = [];
     for ( let id of Object.keys( this._users ) ) {
       connectedUsers.push( id );
@@ -530,9 +544,18 @@ class zMediaSoupAVClient extends AVClient {
      * @return {MediaStream|null}    The MediaStream for the user, or null if the user does not have
      *                                one
      */
-  getMediaStreamForUser() {
-    zdebug0("MediaSoup: getMediaStreamForUser called but not used");
+  getMediaStreamForUser( userId ) {
+    zdebug(`--> MediaSoup: getMediaStreamForUser called for ${userId} but not used`);
     return null;
+  }
+
+  getLevelsStreamForUser( userId ) {
+    zdebug(`--> MediaSoup: getLevelsStreamForUser called for ${userId} but not used`);
+    return null;
+  }
+
+  async updateLocalStream() {
+    zdebug(`--> MediaSoup: updateLocalStream called but not used`);
   }
 
   /* -------------------------------------------- */
@@ -542,12 +565,15 @@ class zMediaSoupAVClient extends AVClient {
      * @return {boolean}
      */
   isAudioEnabled() {
-    zdebug0( 'MediaSoup: isAudioEnabled' );
-    for ( let [key, value] of Object.entries( this._user._streams ) ) {
-      if ( value.kind === 'audio' ) {
-	return !(value.stream.getAudioTracks()[0].muted);
-      }
+    if ( !this._connected ) {
+      return false;
     }
+    let stream = this._user.getStream( 'audio' );
+    if ( stream ) {
+      // zdebug( `--> MediaSoup: isAudioEnabled true` );
+      return true;
+    }
+    // zdebug( '--> MediaSoup: isAudioEnabled false' );
     return false;
   }
 
@@ -558,12 +584,15 @@ class zMediaSoupAVClient extends AVClient {
      * @return {boolean}
      */
   isVideoEnabled() {
-    zdebug0( 'MediaSoup: isVideoEnabled' );
-    for ( let [key, value] of Object.entries( this._user._streams ) ) {
-      if ( value.kind === 'video' ) {
-	return value.stream.getAudioTracks()[0].enabled;
-      }
+    if ( !this._connected ) {
+      return false;
     }
+    let stream = this._user.getStream( 'video' );
+    if ( stream ) {
+      // zdebug( `--> MediaSoup: isVideoEnabled true` );
+      return true;
+    }
+    // zdebug( '--> MediaSoup: isVideoEnabled false' );
     return false;
   }
 
@@ -575,11 +604,10 @@ class zMediaSoupAVClient extends AVClient {
      *                                  disabled (false)
      */
   async toggleAudio(enable) {
-    zdebug0( `MediaSoup: Toggling audio: ${enable}` );
-    for ( let [key, value] of Object.entries( this._user._streams ) ) {
-      if ( value.kind === 'audio' ) {
-	value.stream.getAudioTracks()[0].enabled = enable;
-      }
+    zdebug( `--> MediaSoup: Toggling audio: ${enable}` );
+    let stream = this._user.getStream( 'audio' );
+    if ( stream ) {
+      stream.getAudioTracks()[0].enabled = enable;
     }
   }
 
@@ -592,8 +620,8 @@ class zMediaSoupAVClient extends AVClient {
      * @param {boolean} broadcast   Whether outbound audio should be sent to connected peers or not?
      */
   async toggleBroadcast(broadcast) {
-    zdebug0( "MediaSoup: Toggling Broadcast audio" );
-    zdebug0( broadcast );
+    zdebug( "--> MediaSoup: Toggling Broadcast audio" );
+    zdebug( broadcast );
   }
 
   /* -------------------------------------------- */
@@ -604,12 +632,13 @@ class zMediaSoupAVClient extends AVClient {
      *                                  disabled (false)
      */
   async toggleVideo(enable) {
-    zdebug0( `MediaSoup: Toggling video: ${enable}` );
-    for ( let [key, value] of Object.entries( this._user._streams ) ) {
-      if ( value.kind === 'video' ) {
-	value.stream.getVideoTracks()[0].enabled = enable;
-      }
+    zdebug( `--> MediaSoup: Toggling video: ${enable}` );
+    // game.user.broadcastActivity( {av: { hidden: !enable } } );
+    let stream = this._user.getStream( 'video' );
+    if ( stream ) {
+      stream.getVideoTracks()[0].enabled = enable;
     }
+    this.masterRender();
   }
 
   /* -------------------------------------------- */
@@ -621,7 +650,7 @@ class zMediaSoupAVClient extends AVClient {
      *                                            set
      */
   async setUserVideo(userId, videoElement) {
-    zdebug0( `MediaSoup: setUserVideo for ${userId}` );
+    zdebug( `--> MediaSoup: setUserVideo for ${userId}` );
 
     let user = this._users[ userId ];
     if ( !user ) {
@@ -630,39 +659,25 @@ class zMediaSoupAVClient extends AVClient {
     }
 
     // attach video
-    for ( let [key, value] of Object.entries( user._streams ) ) {
-      if ( value.kind === 'video' ) {
-	videoElement.srcObject = value.stream;
-	const event = new CustomEvent( "webrtcVideoSet", { detail: { userId }} );
-	videoElement.dispatchEvent( event );
-      }
+    let video = user.getStream( 'video' );
+    if ( video ) {
+      videoElement.srcObject = video;
+      const event = new CustomEvent( "webrtcVideoSet", { detail: { userId }} );
+      await videoElement.dispatchEvent( event );
     }
 
-    if ( this._user.userId() == userId ) {
+    // if current user, done - do not attach audio
+    if ( userId === game.user.id ) {
       return;
     }
 
     // attach audio
-    for ( let [key, value] of Object.entries( user._streams ) ) {
-      if ( value.kind === 'audio' ) {
-	let audioElement = this.getUserAudioElement( userId, videoElement );
-	audioElement.srcObject = value.stream;
-	audioElement.volume = this.settings.getUser(userId).volume;
-	audioElement.muted = this.settings.get("client", "muteAll");
-      }
-    }
-  }
-
-  muteAll() {
-    const muted = this.settings.get("client", "muteAll");
-    for ( const userId of Object.keys( this._users ) ) {
-      if ( userId === this._user.userId() ) {
-	continue;
-      }
-      const audioElement = this.getUserAudioElement( userId );
-      if ( audioElement ) {
-        audioElement.muted = muted;
-      }
+    let audio = user.getStream( 'audio' );
+    if ( audio ) {
+      let audioElement = await this.getUserAudioElement( userId, videoElement );
+      audioElement.srcObject = audio;
+      audioElement.volume = this.settings.getUser(userId).volume;
+      audioElement.muted = this.settings.get("client", "muteAll");
     }
   }
 
@@ -675,38 +690,31 @@ class zMediaSoupAVClient extends AVClient {
      * @param {object} changed      The settings which have changed
      */
   onSettingsChanged(changed) {
-    zdebug0( "MediaSoup: onSettingsChanged" );
+    zdebug( "--> MediaSoup: onSettingsChanged" );
 
-    const keys = Object.keys(flattenObject(changed));
+    const keys = new Set(Object.keys(foundry.utils.flattenObject(changed)));
 
-    // Change audio or video sources
-    if (keys.some((k) => ["client.videoSrc", "client.audioSrc"].includes(k))
-	|| hasProperty(changed, `users.${game.user.id}.canBroadcastVideo`)
-	|| hasProperty(changed, `users.${game.user.id}.canBroadcastAudio`)) {
-      this.master.connect();
+    // Change audio source
+    const audioSourceChange = keys.has("client.audioSrc");
+
+    // Change video source
+    const videoSourceChange = keys.has("client.videoSrc");
+
+    // Re-render the AV camera view
+    const renderChange = ["client.audioSink", "client.muteAll"].some((k) =>
+      keys.has(k)
+    );
+    if (audioSourceChange || videoSourceChange || renderChange) {
+      zdebug( '---> MediaSoup render' );
+      this.disconnect();
+      this.connect();
+      this.masterRender();
     }
-
-    // Change voice broadcasting mode
-    if (keys.some((k) => ["client.voice.mode"].includes(k))) {
-      this.master.connect();
-    }
-
-    // Change audio sink device
-    if (keys.some((k) => ["client.audioSink"].includes(k))) {
-      this.master.connect();
-    }
-
-    // Change muteAll
-    if (keys.some((k) => ["client.muteAll"].includes(k))) {
-      this.muteAll();
-    }
-
-    // render
-    // this.master.render();
   }
 }
 
 // add reconnect button
+/*
 Hooks.on( "renderCameraViews", async function( cameraviews, html ) {
   const cameraBox = html.find( `[data-user="${game.user?.id}"]` );
   const element = cameraBox.find( '[data-action="toggle-popout"]' );
@@ -714,5 +722,6 @@ Hooks.on( "renderCameraViews", async function( cameraviews, html ) {
   connect.on( "click", async () => { await game.webrtc.client.connect(); } );
   element.after( connect );
 });
+*/
 
 CONFIG.WebRTC.clientClass = zMediaSoupAVClient;
