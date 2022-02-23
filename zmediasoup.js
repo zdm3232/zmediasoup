@@ -60,6 +60,8 @@ class zMediaSoupAVClient extends AVClient {
   async initialize() {
     zdebug( "--> MediaSoup initialize" );
     this._connected = false;
+    this._serverKey = null;
+    this._serverUrl = null;
     this._roomId = game.settings.get( "zmediasoup", "serverRoom");
     this._socket = null;
     this._device = null;
@@ -423,13 +425,13 @@ class zMediaSoupAVClient extends AVClient {
 
     // await this.disconnect(); // Disconnect first, just in case
 
-    let serverKey = game.settings.get( "zmediasoup", "serverKey");
-    let serverUrl = game.settings.get( "zmediasoup", "serverUrl");
+    this._serverKey = game.settings.get( "zmediasoup", "serverKey" );
+    this._serverUrl = game.settings.get( "zmediasoup", "serverUrl" );
     const opts = {
-      path: `/${serverKey}`,
+      path: `/${this._serverKey}`,
       transports: ['websocket']
     };
-    socket = io( serverUrl, opts );
+    socket = io( this._serverUrl, opts );
     socket.request = socketPromise( socket );
 
     socket.on('connect', async () => {
@@ -683,6 +685,7 @@ class zMediaSoupAVClient extends AVClient {
   onSettingsChanged(changed) {
     zdebug( "--> MediaSoup: onSettingsChanged" );
 
+    // check settings
     const keys = new Set(Object.keys(foundry.utils.flattenObject(changed)));
 
     // Change audio source
@@ -695,7 +698,16 @@ class zMediaSoupAVClient extends AVClient {
     const renderChange = ["client.audioSink", "client.muteAll"].some((k) =>
       keys.has(k)
     );
-    if (audioSourceChange || videoSourceChange || renderChange) {
+
+    // check server
+    console.log( `ROOM: ${this._roomId} -> ${game.settings.get( "zmediasoup", "serverRoom" )}` );
+    console.log( `KEY:  ${this._serverKey} -> ${game.settings.get( "zmediasoup", "serverKey" )}` );
+    console.log( `URL:  ${this._serverUrl} -> ${game.settings.get( "zmediasoup", "serverUrl" )}` );
+    const serverChange = ( (this._roomId != game.settings.get( "zmediasoup", "serverRoom" )) ||
+			   (this._serverKey != game.settings.get( "zmediasoup", "serverKey" )) ||
+			   (this._serverUrl != game.settings.get( "zmediasoup", "serverUrl" )) );
+
+    if ( serverChange || audioSourceChange || videoSourceChange || renderChange) {
       zdebug( '---> MediaSoup render' );
       this.disconnect();
       this.connect();
@@ -721,27 +733,31 @@ Hooks.once( "init", function() {
     scope: "world",
     config: true,
     type: String,
-    default: "",
-    onChange: () => zMediaSoupAVClient.reconnect()
+    default: ""
   });
   game.settings.register( "zmediasoup", "serverUrl", {
     name: "Server Url",
     scope: "world",
     config: true,
     type: String,
-    default: "",
-    onChange: () => zMediaSoupAVClient.reconnect()
+    default: ""
   });
   game.settings.register( "zmediasoup", "serverRoom", {
     name: "Server Room",
     scope: "world",
     config: true,
     type: String,
-    default: "",
-    onChange: () => zMediaSoupAVClient.reconnect()
+    default: ""
   });
   position.init();
 });
 
+Hooks.on( "closeSettingsConfig", function( settings ) {
+  if ( ui.webrtc ) {
+    if ( ui.webrtc.settings ) {
+      ui.webrtc.settings.client.onSettingsChanged( {} );
+    }
+  }
+});
 
 CONFIG.WebRTC.clientClass = zMediaSoupAVClient;
