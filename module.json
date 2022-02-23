@@ -6,5 +6,6 @@
   "minimumCoreVersion": "9",
   "compatibleCoreVersion": "9",
   "author": "zDM",
-  "esmodules": ["./zmediasoup.js" ]
+  "esmodules": ["./zmediasoup.js" ],
+  "styles": [ "./style.css" ]
 }

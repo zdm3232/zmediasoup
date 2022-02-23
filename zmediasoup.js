@@ -1,19 +1,8 @@
 
 import "./lib/mediasoupclient.min.js";
 
-import {config} from "./config.js";
+import {position} from "./position.js";
 
-/*
-  config.js should have server configuration information
-
-  export let config = {
-    serverKey: "path-name-in-socket-for-server",
-    serverName: "server-host-name",
-    serverUrl: "server-url",
-    roomId: "room-id",
-  };
-
-*/
 
 function zdebug( obj ) {
   // console.log( obj );
@@ -71,7 +60,7 @@ class zMediaSoupAVClient extends AVClient {
   async initialize() {
     zdebug( "--> MediaSoup initialize" );
     this._connected = false;
-    this._roomId = config.roomId;
+    this._roomId = game.settings.get( "zmediasoup", "serverRoom");
     this._socket = null;
     this._device = null;
     this._user = new zMediaSoupUser( game.user );
@@ -434,11 +423,13 @@ class zMediaSoupAVClient extends AVClient {
 
     // await this.disconnect(); // Disconnect first, just in case
 
+    let serverKey = game.settings.get( "zmediasoup", "serverKey");
+    let serverUrl = game.settings.get( "zmediasoup", "serverUrl");
     const opts = {
-      path: `/${config.serverKey}`,
+      path: `/${serverKey}`,
       transports: ['websocket']
     };
-    socket = io( config.serverUrl, opts );
+    socket = io( serverUrl, opts );
     socket.request = socketPromise( socket );
 
     socket.on('connect', async () => {
@@ -723,5 +714,34 @@ Hooks.on( "renderCameraViews", async function( cameraviews, html ) {
   element.after( connect );
 });
 */
+
+Hooks.once( "init", function() {
+  game.settings.register( "zmediasoup", "serverKey", {
+    name: "Server Key",
+    scope: "world",
+    config: true,
+    type: String,
+    default: "",
+    onChange: () => zMediaSoupAVClient.reconnect()
+  });
+  game.settings.register( "zmediasoup", "serverUrl", {
+    name: "Server Url",
+    scope: "world",
+    config: true,
+    type: String,
+    default: "",
+    onChange: () => zMediaSoupAVClient.reconnect()
+  });
+  game.settings.register( "zmediasoup", "serverRoom", {
+    name: "Server Room",
+    scope: "world",
+    config: true,
+    type: String,
+    default: "",
+    onChange: () => zMediaSoupAVClient.reconnect()
+  });
+  position.init();
+});
+
 
 CONFIG.WebRTC.clientClass = zMediaSoupAVClient;
