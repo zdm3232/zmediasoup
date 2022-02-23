@@ -700,9 +700,6 @@ class zMediaSoupAVClient extends AVClient {
     );
 
     // check server
-    console.log( `ROOM: ${this._roomId} -> ${game.settings.get( "zmediasoup", "serverRoom" )}` );
-    console.log( `KEY:  ${this._serverKey} -> ${game.settings.get( "zmediasoup", "serverKey" )}` );
-    console.log( `URL:  ${this._serverUrl} -> ${game.settings.get( "zmediasoup", "serverUrl" )}` );
     const serverChange = ( (this._roomId != game.settings.get( "zmediasoup", "serverRoom" )) ||
 			   (this._serverKey != game.settings.get( "zmediasoup", "serverKey" )) ||
 			   (this._serverUrl != game.settings.get( "zmediasoup", "serverUrl" )) );
@@ -753,10 +750,9 @@ Hooks.once( "init", function() {
 });
 
 Hooks.on( "closeSettingsConfig", function( settings ) {
+  console.log( `--> closeSettingsConfig` );
   if ( ui.webrtc ) {
-    if ( ui.webrtc.settings ) {
-      ui.webrtc.settings.client.onSettingsChanged( {} );
-    }
+    ui.webrtc.webrtc.client.onSettingsChanged( {} );
   }
 });
 
